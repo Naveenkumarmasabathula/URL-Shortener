@@ -1,0 +1,56 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/01-init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      retries: 20
+
+  shorten:
+    build: ./services/shorten
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/postgres
+      REDIS_URL: redis://redis:6379
+      BASE_URL: http://localhost:8080
+      RATE_LIMIT: "30"
+    depends_on: { postgres: { condition: service_healthy }, redis: { condition: service_healthy } }
+
+  redirect:
+    build: ./services/redirect
+    deploy:
+      replicas: 2            # load-balanced by the gateway
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/postgres
+      REDIS_URL: redis://redis:6379
+    depends_on: { postgres: { condition: service_healthy }, redis: { condition: service_healthy } }
+
+  analytics:
+    build: ./services/analytics
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/analytics
+      REDIS_URL: redis://redis:6379
+    depends_on: { postgres: { condition: service_healthy }, redis: { condition: service_healthy } }
+
+  gateway:
+    image: nginx:1.27-alpine
+    ports:
+      - "8080:80"
+    volumes:
+      - ./gateway/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./gateway/proxy_params:/etc/nginx/proxy_params:ro
+    depends_on: [shorten, redirect, analytics]
+
+volumes:
+  pgdata:
